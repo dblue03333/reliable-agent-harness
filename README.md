@@ -5,9 +5,11 @@
 An operations assistant that will investigate service issues through validated tools,
 bounded agent execution, and human approval before creating incidents.
 
-**Status: project bootstrap.** The API health endpoint, development environment,
-smoke test, CI, and implementation plan are available. The agent loop, mock tools,
-and approval endpoints are planned and are **not implemented yet**.
+**Status: M0 — contracts and settings implemented.** Strict decision/tool/state
+schemas, environment configuration, startup validation, and an async provider
+interface are available alongside the health API and CI configuration. The agent
+loop, mock tool handlers, fake/Gemini providers, and approval endpoints are
+**not implemented yet**. Start with the [M0 walkthrough](docs/m0-walkthrough.md).
 
 ## Quick start
 
@@ -24,7 +26,11 @@ uv run uvicorn agent_harness.api:app --reload
 - Health endpoint: http://127.0.0.1:8000/health
 - Import `postman/agent-harness.postman_collection.json` to check the running API.
 
-The bootstrap does not require an API key or environment variables.
+The default configuration selects `fake` and needs no API key. Settings read `.env`
+from the working directory; process environment values override it. See `.env.example`.
+Selecting `gemini` requires both `GEMINI_API_KEY` and `GEMINI_MODEL` at startup, but
+the Gemini adapter itself will be implemented in M3. Budget values are currently
+validated configuration; runtime enforcement is a later milestone.
 
 ## Development checks
 
@@ -58,13 +64,14 @@ postman/            Importable API collection
 .github/workflows/  Continuous integration
 ```
 
-See [architecture](docs/architecture.md) and [roadmap](docs/roadmap.md) for the
-intended harness behavior, safety invariants, test coverage, and submission work.
+See the detailed [Q4 implementation plan](docs/implementation-plan.md),
+[architecture](docs/architecture.md), and [roadmap](docs/roadmap.md) for the intended
+harness behavior, safety invariants, test coverage, and submission work.
 
 ## Current limitations
 
 This repository is not a completed assessment submission. There is no LLM
 integration, execution storage, incident creation, or approval workflow yet.
-The existing test verifies API bootstrapping only. The final report, execution
-Postman requests, mock dataset, and failure tests will be added with the features
-they document.
+M0 tests verify contracts and configuration, not runtime approval or retry safety.
+The final report, execution Postman requests, mock dataset, and runtime failure
+tests will be added with the features they document. See [verification evidence](docs/evidence.md).
