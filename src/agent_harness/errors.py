@@ -14,6 +14,8 @@ class ErrorCode(StrEnum):
     UNKNOWN_TOOL = "unknown_tool"
     INVALID_TOOL_INPUT = "invalid_tool_input"
     INVALID_TOOL_OUTPUT = "invalid_tool_output"
+    INVALID_MOCK_DATA = "invalid_mock_data"
+    APPROVAL_REQUIRED = "approval_required"
     TOOL_TRANSIENT = "tool_transient"
     TOOL_PERMANENT = "tool_permanent"
     TOOL_TIMEOUT = "tool_timeout"
@@ -54,4 +56,56 @@ class ConfigurationError(HarnessError):
         super().__init__(
             ErrorCode.INVALID_CONFIGURATION,
             "Invalid application configuration. Check provider credentials, model, and limits.",
+        )
+
+
+class UnknownToolError(HarnessError):
+    def __init__(self) -> None:
+        super().__init__(ErrorCode.UNKNOWN_TOOL, "Tool is not registered.")
+
+
+class ToolInputValidationError(HarnessError):
+    def __init__(self) -> None:
+        super().__init__(ErrorCode.INVALID_TOOL_INPUT, "Arguments do not match the tool schema.")
+
+
+class ToolOutputValidationError(HarnessError):
+    """The handler ran; this error does not imply absence of a side effect."""
+
+    def __init__(self) -> None:
+        super().__init__(ErrorCode.INVALID_TOOL_OUTPUT, "Result does not match the tool schema.")
+
+
+class ApprovalRequiredError(HarnessError):
+    def __init__(self) -> None:
+        super().__init__(
+            ErrorCode.APPROVAL_REQUIRED, "This tool requires a claimed approved action."
+        )
+
+
+class MockDataError(HarnessError):
+    def __init__(self) -> None:
+        super().__init__(ErrorCode.INVALID_MOCK_DATA, "Mock dataset is missing or invalid.")
+
+
+class PermanentToolError(HarnessError):
+    def __init__(self) -> None:
+        super().__init__(ErrorCode.TOOL_PERMANENT, "Requested service is not in the mock dataset.")
+
+
+class TransientToolError(HarnessError):
+    def __init__(self) -> None:
+        super().__init__(ErrorCode.TOOL_TRANSIENT, "Tool is temporarily unavailable.")
+
+
+class ToolHandlerError(HarnessError):
+    def __init__(self) -> None:
+        super().__init__(ErrorCode.INTERNAL_ERROR, "Tool handler raised an unexpected error.")
+
+
+class IncidentConflictError(HarnessError):
+    def __init__(self) -> None:
+        super().__init__(
+            ErrorCode.ACTION_CONFLICT,
+            "Action ID was already used with different incident arguments or execution.",
         )

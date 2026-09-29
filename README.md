@@ -5,11 +5,11 @@
 An operations assistant that will investigate service issues through validated tools,
 bounded agent execution, and human approval before creating incidents.
 
-**Status: M0 — contracts and settings implemented.** Strict decision/tool/state
-schemas, environment configuration, startup validation, and an async provider
-interface are available alongside the health API and CI configuration. The agent
-loop, mock tool handlers, fake/Gemini providers, and approval endpoints are
-**not implemented yet**. Start with the [M0 walkthrough](docs/m0-walkthrough.md).
+**Status: M1 — mock tools and registry implemented.** Three mock handlers, synthetic
+fixtures, input/output validation, and process-local incident deduplication now build
+on M0 contracts/settings. Ordinary registry calls block incident creation pending
+approval. The agent loop, fake/Gemini providers, and human approval workflow are
+**not implemented yet**.
 
 ## Quick start
 
@@ -32,6 +32,18 @@ Selecting `gemini` requires both `GEMINI_API_KEY` and `GEMINI_MODEL` at startup,
 the Gemini adapter itself will be implemented in M3. Budget values are currently
 validated configuration; runtime enforcement is a later milestone.
 
+## Run the M1 tool demo
+
+```sh
+uv run python -m agent_harness.tools.demo --data-dir mock_data
+```
+
+The demo reads checkout status and runbooks, then shows `approval_required` and
+`incident_count: 0` for an ordinary incident request. No LLM or network is used.
+Dataset paths are explicit application configuration; see the [data dictionary](mock_data/README.md).
+If a local macOS editable install cannot import `agent_harness`,
+prefix the command with `PYTHONPATH=src`.
+
 ## Development checks
 
 ```sh
@@ -41,7 +53,7 @@ uv run pytest
 ```
 
 GitHub Actions runs these checks on pushes and pull requests using Python 3.12 and 3.13.
-Use short-lived `codex/<topic>` branches for subsequent work and open pull requests
+Use short-lived feature branches for subsequent work and open pull requests
 against `main`.
 
 ## Planned use case
@@ -58,20 +70,21 @@ side-effecting tool and execute only the exact action approved by a human.
 ```text
 src/agent_harness/   Python package and API entry point
 tests/              Automated tests
-docs/               Architecture decisions and delivery roadmap
-mock_data/          Location for planned synthetic tool fixtures
+mock_data/          Synthetic service statuses, runbooks, and data dictionary
 postman/            Importable API collection
 .github/workflows/  Continuous integration
 ```
 
-See the detailed [Q4 implementation plan](docs/implementation-plan.md),
-[architecture](docs/architecture.md), and [roadmap](docs/roadmap.md) for the intended
-harness behavior, safety invariants, test coverage, and submission work.
+Internal planning and walkthrough documents are kept in the git-ignored
+`local_doc/` directory and are not included in a clone of this repository.
 
 ## Current limitations
 
 This repository is not a completed assessment submission. There is no LLM
-integration, execution storage, incident creation, or approval workflow yet.
-M0 tests verify contracts and configuration, not runtime approval or retry safety.
-The final report, execution Postman requests, mock dataset, and runtime failure
-tests will be added with the features they document. See [verification evidence](docs/evidence.md).
+integration, execution storage, approval workflow, or automatic retry/budget control yet.
+The mock incident adapter is available to trusted code; its internal claimed-action
+bridge is not proof of human approval. M4 will validate ownership and atomically claim
+stored approvals. Deduplication is limited to a single tool bundle/process lifetime.
+The final report and execution Postman requests will arrive with the remaining features.
+The M1 verification ran 122 offline test cases, lint and formatting checks, plus
+a non-editable package installation and CLI demo from a separate working directory.

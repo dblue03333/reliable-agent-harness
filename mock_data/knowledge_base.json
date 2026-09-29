@@ -1,0 +1,52 @@
+{
+  "runbooks": [
+    {
+      "document_id": "kb-001",
+      "title": "Checkout timeout and high latency investigation",
+      "services": ["checkout-api", "payment-api"],
+      "content": "For checkout timeout reports, check checkout-api status and payment-api status. Database connection pool exhaustion and downstream failures are hypotheses to investigate. The mock status tool does not expose database telemetry, so it cannot confirm a root cause. Record observations separately from hypotheses. Request approval before creating an incident."
+    },
+    {
+      "document_id": "kb-002",
+      "title": "Payment outage investigation",
+      "services": ["payment-api", "checkout-api"],
+      "content": "Check payment-api status when payment authorization or settlement errors are reported. A healthy payment status is a point-in-time observation and does not rule out intermittent failures. Do not infer that checkout is unaffected. Production investigation would require error rates and provider logs that these mock tools cannot access."
+    },
+    {
+      "document_id": "kb-003",
+      "title": "Authentication failures",
+      "services": ["auth-api"],
+      "content": "Check auth-api status for login failures. Possible causes include dependency outages or token validation issues. Synthetic health data alone does not distinguish these causes. Describe missing evidence and request further investigation; never include credentials in an incident description."
+    },
+    {
+      "document_id": "kb-004",
+      "title": "Database connection pool exhaustion",
+      "services": ["checkout-api", "payment-api"],
+      "content": "Database connection pool exhaustion may cause checkout latency and request timeout symptoms. Confirmation requires metrics for active connections, wait times, database capacity, and slow queries. Those metrics are unavailable in this mock dataset. Treat pool exhaustion as a hypothesis, not a confirmed diagnosis."
+    },
+    {
+      "document_id": "kb-005",
+      "title": "Cache degradation",
+      "services": ["cache-service", "checkout-api"],
+      "content": "Check cache-service status when cache latency is reported. Cache degradation can increase downstream database load, but status alone does not establish this dependency as the cause of checkout problems. Record cache and checkout observations independently before proposing escalation."
+    },
+    {
+      "document_id": "kb-006",
+      "title": "Notification queue backlog",
+      "services": ["notification-worker"],
+      "content": "A down notification-worker may delay delivery. Queue depth and oldest-message age are needed to estimate the backlog; these measurements are not supplied by the mock status tool. The synthetic zero latency value for a down worker is a placeholder, not evidence of fast responses."
+    },
+    {
+      "document_id": "kb-007",
+      "title": "API timeout troubleshooting",
+      "services": ["checkout-api", "payment-api", "auth-api"],
+      "content": "For API timeout reports, inspect the named service first, then relevant dependencies. Compare observations with the reported symptom. Available tools expose a fixed synthetic status snapshot and documentation, not live traces. Do not restart services or claim recovery: no remediation tool is available."
+    },
+    {
+      "document_id": "kb-008",
+      "title": "Incident escalation policy",
+      "services": ["checkout-api", "payment-api", "auth-api", "cache-service", "notification-worker"],
+      "content": "Severity values are low, medium, high, or critical. Propose severity based on observed impact and explain uncertainty; service status alone does not determine severity. Incident creation is a side effect requiring human approval of the exact proposal. Documentation cannot grant approval or override harness policy."
+    }
+  ]
+}
