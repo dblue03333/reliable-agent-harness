@@ -258,6 +258,8 @@ class ExecutionEvent(ContractModel):
     tool_call_id: Identifier | None = None
     tool: Identifier | None = None
     attempt: Annotated[int, Field(ge=1)] | None = None
+    is_repair: bool | None = None
+    retry_delay_seconds: Annotated[float, Field(ge=0)] | None = None
     duration_ms: Annotated[float, Field(ge=0)] | None = None
     outcome: ActionOutcome | None = None
     error: ErrorInfo | None = None

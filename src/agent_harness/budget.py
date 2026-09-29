@@ -50,9 +50,25 @@ class ActiveBudget:
                     ErrorCode.RUNTIME_LIMIT, "Active runtime budget exhausted."
                 ) from None
             raise HarnessError(timeout_code, "Operation timed out.") from None
+        except Exception:
+            # An adapter may catch our cancellation and translate it to a domain
+            # error. The expired owning deadline still determines classification.
+            # External CancelledError is a BaseException and propagates unchanged.
+            if timer.expired():
+                code = (
+                    ErrorCode.RUNTIME_LIMIT
+                    if global_deadline_first or self.remaining <= 0
+                    else timeout_code
+                )
+                raise HarnessError(code, "Operation exceeded its deadline.") from None
+            raise
         # Providers/handlers must cooperate with cancellation. Detect a swallowed
         # deadline, but a blocking function cannot be forcibly stopped by asyncio.
         if timer.expired():
-            code = ErrorCode.RUNTIME_LIMIT if global_deadline_first else timeout_code
+            code = (
+                ErrorCode.RUNTIME_LIMIT
+                if global_deadline_first or self.remaining <= 0
+                else timeout_code
+            )
             raise HarnessError(code, "Operation exceeded its deadline.")
         return result

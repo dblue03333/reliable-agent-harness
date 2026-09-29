@@ -1,4 +1,4 @@
-"""Typed allowlist and one-attempt execution boundary; no retries or timeouts yet."""
+"""Typed allowlist and one-attempt boundary; the harness owns retry/deadline policy."""
 
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
@@ -27,6 +27,9 @@ class ToolSpec[InputT: ContractModel, OutputT: ContractModel]:
     handler: Callable[[InputT, ToolExecutionContext | None], Awaitable[object]]
     side_effect: bool = False
     requires_approval: bool = False
+    # Trusted adapter capability, never a claim supplied by the model or user.
+    # Enable only when replaying the same action/payload cannot create a second effect.
+    supports_incident_replay: bool = False
 
     def __post_init__(self) -> None:
         if not self.name.strip():
@@ -35,6 +38,8 @@ class ToolSpec[InputT: ContractModel, OutputT: ContractModel]:
             raise ValueError("Side-effecting tools must require approval.")
         if self.name == "create_incident" and not (self.side_effect and self.requires_approval):
             raise ValueError("Incident creation must declare side effect and approval.")
+        if self.supports_incident_replay and self.name != "create_incident":
+            raise ValueError("Only the incident adapter can declare incident replay support.")
 
 
 @dataclass(frozen=True)
@@ -98,6 +103,10 @@ class ToolRegistry:
             }
             for spec in self._specs.values()
         ]
+
+    @property
+    def supports_incident_replay(self) -> bool:
+        return self._resolve("create_incident").supports_incident_replay
 
     async def execute(self, name: str, arguments: object) -> ContractModel:
         call = self.prepare(name, arguments)
