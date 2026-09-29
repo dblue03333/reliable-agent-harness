@@ -411,3 +411,42 @@ async def test_tool_and_provider_failures_are_readable_http_snapshots(fault):
         assert saved.json() == state
         events = (await client.get("/executions/" + state["execution_id"] + "/events")).json()
         assert events[-1]["event_type"] == "execution_terminated"
+
+
+@pytest.mark.parametrize(
+    "method,path,status,code",
+    [
+        ("GET", "/unknown", 404, "not_found"),
+        ("PUT", "/executions", 405, "invalid_request"),
+        ("POST", "/health", 405, "invalid_request"),
+    ],
+)
+async def test_framework_routing_errors_use_api_envelope(method, path, status, code):
+    app, _, _ = custom()
+    async with client_for(app) as client:
+        result = await client.request(method, path)
+        assert result.status_code == status
+        assert result.json()["error"]["code"] == code
+        assert "detail" not in result.json()
+        if status == 405:
+            assert result.headers["allow"]
+
+
+@pytest.mark.parametrize("status", [400, 401, 429, 503])
+async def test_framework_exception_details_are_sanitized_and_headers_preserved(status):
+    from starlette.exceptions import HTTPException
+
+    app, _, _ = custom()
+
+    @app.get("/test-http-error")
+    async def fail():
+        raise HTTPException(status, detail="secret diagnostic", headers={"Retry-After": "10"})
+
+    async with client_for(app) as client:
+        result = await client.get("/test-http-error")
+        assert result.status_code == status
+        assert result.json()["error"]["code"] == (
+            "internal_error" if status >= 500 else "invalid_request"
+        )
+        assert "secret diagnostic" not in result.text
+        assert result.headers["retry-after"] == "10"

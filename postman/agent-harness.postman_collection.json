@@ -433,6 +433,47 @@
           }
         }
       ]
+    },
+    {
+      "name": "Unknown route",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{base_url}}/unknown"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP 404', () => pm.response.to.have.status(404));",
+              "pm.test('Error envelope', () => pm.expect(pm.response.json().error.code).to.eql('not_found'));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Unsupported method",
+      "request": {
+        "method": "PUT",
+        "header": [],
+        "url": "{{base_url}}/executions"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP 405', () => pm.response.to.have.status(405));",
+              "pm.test('Error envelope', () => pm.expect(pm.response.json().error.code).to.eql('invalid_request'));",
+              "pm.test('Allow header preserved', () => pm.expect(pm.response.headers.get('Allow')).to.include('POST'));"
+            ]
+          }
+        }
+      ]
     }
   ]
 }

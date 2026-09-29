@@ -5,16 +5,9 @@
 An operations assistant built around validated tools, bounded agent execution,
 and human approval before creating incidents.
 
-**Status: M6 — execution API and Postman walkthrough implemented.**
-The harness accepts objectives, validates LLM/tool decisions, tracks isolated state/history,
-and enforces step/runtime limits. Incident proposals now pause for explicit human approval
-of the exact stored action. Approve executes it with bounded, idempotent retries;
-reject resumes with a denial observation.
-Duplicate or competing decisions cannot claim the same action twice.
-
-Gemini schema smoke passed on 2026-09-29 using `gemini-3.5-flash-lite` and SDK `1.75.0`.
-M6 is verified offline; full live investigation/approval E2E is still a later gate.
-This is an incremental implementation, not a completed assessment submission.
+**Implemented:** CLI and HTTP API, validated tool I/O, exact-action approval,
+bounded retries/repair, and execution history. State and incident deduplication are
+process-local. Fake mode is scripted; full live Gemini E2E verification is pending.
 
 ## Quick start
 
@@ -174,8 +167,8 @@ loses executions and pending approvals. No authentication is implemented; use lo
 | `POST /executions/{execution_id}/actions/{action_id}/reject` | 200 after recording denial and resuming; **no request body** |
 
 POST waits until completion, failure, limit or approval pause; there are no background jobs
-or 202 responses. Missing/foreign IDs return 404, stale/competing decisions 409, and invalid
-HTTP input 422. Approve/reject reject even `{}`, `null` or whitespace bodies. HTTP errors
+or 202 responses. Missing/foreign IDs return 404, stale/competing decisions 409, unsupported methods 405, and invalid
+HTTP input 422. Router-generated errors use the same envelope; 405 preserves `Allow`. Approve/reject reject even `{}`, `null` or whitespace bodies. HTTP errors
 use `{"error":{"code":"...","message":"..."}}` with sanitized messages. Unhandled API
 errors return 500. Errors caught during harness execution return a **201/200 execution
 snapshot** with `failed`/`limit_exceeded`; always inspect status and action outcomes.
@@ -235,10 +228,8 @@ requests one service-status tool proposal and one final decision, validates both
 the existing contracts, and **never executes a tool**. Successful output includes the
 actual configured model, SDK version, schema fingerprint, timestamp and request count.
 Failure returns a safe error and nonzero exit; missing configuration never falls back
-to the fake provider. The verified schema uses a required `decision` envelope around
-the contract-derived union. The adapter unwraps that exact field, then the harness validates
-the inner decision. A root-level union produced `{}` during live testing and was replaced;
-local decision/tool validation was not relaxed.
+to the fake provider. The provider wraps the contract-derived decision in a required `decision` field.
+The adapter unwraps it; the harness validates the inner decision and tool arguments.
 
 `GeminiLLMProvider` implements the same interface used by `AgentHarness`; the fake CLI
 remains explicitly offline. If `.env` selects Gemini, run the fake demo with
@@ -319,6 +310,6 @@ ledger has no durability across restarts, and there is no reconciliation service
 outcomes. Backoff is a fixed bounded schedule without jitter; deployment-scale retry policy
 and provider transport retries are outside this version.
 
-Next: live end-to-end verification and submission documentation (M7/M8).
-The M3 smoke verifies two real provider decisions with zero tool dispatches; it does
-not establish a full live investigation or approval flow. Those remain later gates.
+Pending: full live investigation/approval verification and the submission report.
+The Gemini schema smoke passed on 2026-09-29 with `gemini-3.5-flash-lite` and SDK
+`1.75.0`; it verified two provider decisions with zero tool dispatches.

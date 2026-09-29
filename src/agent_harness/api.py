@@ -3,12 +3,14 @@
 import logging
 from collections.abc import AsyncIterator
 from contextlib import AsyncExitStack, asynccontextmanager
+from http import HTTPStatus
 from typing import Literal
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, computed_field
+from starlette.exceptions import HTTPException
 
 from agent_harness.config import Settings, load_settings
 from agent_harness.demo import scenario_responses
@@ -46,9 +48,13 @@ def response(state: ExecutionState) -> ExecutionResponse:
     return ExecutionResponse.model_validate(state.model_dump())
 
 
-def error_response(status: int, code: ErrorCode, message: str) -> JSONResponse:
+def error_response(
+    status: int, code: ErrorCode, message: str, headers: dict[str, str] | None = None
+) -> JSONResponse:
     payload = APIError(error=ErrorInfo(code=code, message=message))
-    return JSONResponse(status_code=status, content=payload.model_dump(mode="json"))
+    return JSONResponse(
+        status_code=status, content=payload.model_dump(mode="json"), headers=headers
+    )
 
 
 async def require_empty_body(request: Request) -> None:
@@ -106,6 +112,23 @@ def create_app(settings: Settings | None = None, *, harness: AgentHarness | None
         # FastAPI's default detail can echo raw payload/validation inputs.
         return error_response(422, ErrorCode.INVALID_REQUEST, "Request does not match the schema.")
 
+    @application.exception_handler(HTTPException)
+    async def framework_error(request: Request, exc: HTTPException):
+        # Router 404/405 and framework errors must follow the same public contract.
+        # Keep protocol headers (Allow, Retry-After), but never echo private detail.
+        code = (
+            ErrorCode.NOT_FOUND
+            if exc.status_code == 404
+            else ErrorCode.INTERNAL_ERROR
+            if exc.status_code >= 500
+            else ErrorCode.INVALID_REQUEST
+        )
+        try:
+            message = HTTPStatus(exc.status_code).phrase
+        except ValueError:
+            message = "HTTP request failed."
+        return error_response(exc.status_code, code, message, headers=exc.headers)
+
     @application.exception_handler(HarnessError)
     async def domain_error(request: Request, exc: HarnessError):
         status = {
@@ -129,7 +152,7 @@ def create_app(settings: Settings | None = None, *, harness: AgentHarness | None
             logger.error("Unexpected API failure; type=%s", type(exc).__name__)
             return error_response(500, ErrorCode.INTERNAL_ERROR, "Unexpected API failure.")
 
-    errors = {code: {"model": APIError} for code in (404, 409, 422, 500)}
+    errors = {code: {"model": APIError} for code in (404, 405, 409, 422, 500)}
 
     @application.get("/health", response_model=HealthResponse, tags=["health"])
     async def health() -> HealthResponse:
