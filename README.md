@@ -5,14 +5,15 @@
 An operations assistant built around validated tools, bounded agent execution,
 and human approval before creating incidents.
 
-**Status: M4 — approval/resume implemented.**
+**Status: M5 — bounded retries and response repair implemented.**
 The harness accepts objectives, validates LLM/tool decisions, tracks isolated state/history,
 and enforces step/runtime limits. Incident proposals now pause for explicit human approval
-of the exact stored action. Approve executes it once; reject resumes with a denial observation.
+of the exact stored action. Approve executes it with bounded, idempotent retries;
+reject resumes with a denial observation.
 Duplicate or competing decisions cannot claim the same action twice.
 
 Gemini schema smoke passed on 2026-09-29 using `gemini-3.5-flash-lite` and SDK `1.75.0`.
-M4 is verified offline; full live investigation/approval E2E is still a later gate.
+M5 is verified offline; full live investigation/approval E2E is still a later gate.
 This is an incremental implementation, not a completed assessment submission.
 
 ## Quick start
@@ -53,6 +54,17 @@ input or EOF leaves the action pending. The scripted final answer directs you to
 actual recorded outcome instead of assuming approval. `incident-blocked` remains an
 alias for `incident-pending` for earlier demo commands.
 
+Inspect bounded response repair with a deliberately malformed first response:
+
+```sh
+uv run python -m agent_harness.demo --scenario repair --objective "Investigate checkout" --data-dir mock_data
+```
+
+This offline script completes in four LLM steps with `repair_attempt_count=1`.
+Set `MAX_LLM_REPAIR_ATTEMPTS=0` to stop at the invalid response, or
+`MAX_AGENT_STEPS=1` to see repair blocked by the step limit. Tool faults and lost
+incident responses are injected in `tests/test_reliability.py`, not through public routes.
+
 State is in memory: when the CLI exits, its pending execution is lost. To approve/reject,
 use the interactive scenario in that same process, or keep one `AgentHarness` instance
 alive and call `approve(execution_id, action_id)` / `reject(execution_id, action_id)`.
@@ -85,8 +97,14 @@ objective -> CREATED -> claim RUNNING
   bounded by the smaller of its timeout and remaining runtime. Global expiry is
   `runtime_limit`; an earlier operation timeout is `llm_timeout` or `tool_timeout`.
 - Validated tool successes remain in history if later work fails or exhausts limits.
-- Malformed responses and tool failures stop immediately in M4. Automatic repair
-  and retries are reserved for M5, even though their settings already exist.
+- Malformed decision JSON/schema or provider envelopes get at most one repair
+  request per execution, including across approval pauses. Repair consumes a step
+  and runtime; only static harness-authored feedback is sent. Unknown tools and
+  invalid tool arguments fail immediately. LLM transport errors/timeouts do not retry.
+- Read tools retry only `tool_transient` and `tool_timeout`, up to two retries
+  (three attempts), with backoff of 0.25s and 0.5s. Permanent/input/output errors
+  and unexpected exceptions are not retried. Backoff consumes active runtime and
+  is cancellable; no new attempt starts after the budget expires.
 - Cancellation records terminal state and any interrupted read attempt, then
   propagates `CancelledError` to the caller. Async adapters must cooperate with
   cancellation; asyncio cannot forcibly interrupt blocking code.
@@ -101,8 +119,15 @@ objective -> CREATED -> claim RUNNING
   if runtime remains; a later summary can still end with `step_limit`.
 - Before dispatch, interruption resolves the action as failed / `not_dispatched`.
   After dispatch, timeout/cancellation/invalid output or other unverified error is
-  conservatively `outcome_unknown`. No automatic retries occur in M4. An unknown
-  outcome does not prove that no incident was created; check the external system.
+  conservatively `outcome_unknown`. Incident transient errors/timeouts can retry
+  once after 0.25s, with the **same action ID and approved payload**, only when the
+  trusted adapter declares `supports_incident_replay`. The bundled mock does;
+  replacement adapters default to no replay. Malformed output never triggers a retry.
+- Each attempt has a distinct call ID and numbered history/event record. The action
+  remains `executing` across backoff. A validated replay receipt resolves it as
+  `succeeded`; earlier ambiguous attempts remain in history. A later pre-dispatch
+  failure cannot erase earlier ambiguity. Remaining unknown outcomes stop execution;
+  check the external system before taking further action.
 - Successful incident receipts remain recorded even if subsequent LLM work fails,
   is cancelled, or reaches a budget limit. Terminal executions cannot be resumed.
 - This single-user local harness trusts the human-facing caller of approve/reject;
@@ -121,9 +146,9 @@ See [.env.example](.env.example).
 | `MAX_ACTIVE_RUNTIME_SECONDS` | `60` | Total active run budget |
 | `LLM_TIMEOUT_SECONDS` | `20` | Per LLM operation timeout |
 | `DEFAULT_TOOL_TIMEOUT_SECONDS` | `5` | Per tool operation timeout |
-| `MAX_LLM_REPAIR_ATTEMPTS` | `1` | Reserved for M5; no repair in M4 |
-| `MAX_READ_TOOL_RETRIES` | `2` | Reserved for M5; no retry in M4 |
-| `MAX_INCIDENT_RETRIES` | `1` | Reserved for M5; M4 makes one approved attempt |
+| `MAX_LLM_REPAIR_ATTEMPTS` | `1` | Execution-wide repair cap; 0 disables, hard cap 1 |
+| `MAX_READ_TOOL_RETRIES` | `2` | Retries after the first attempt; 0 disables, hard cap 2 |
+| `MAX_INCIDENT_RETRIES` | `1` | Retries for replay-safe incident adapters; 0 disables, hard cap 1 |
 | `LOG_LEVEL` | `INFO` | CLI event logging |
 
 The API still exposes **health only**; execution endpoints are planned for M6:
@@ -196,6 +221,11 @@ step/runtime limits, deadlines and cancellation. Approval tests verify exact sna
 competing decisions, cancellation before/after dispatch, lost responses, repeated proposals,
 resume budgets and preserved incident receipts. Gemini tests also cover schema/role
 mapping, provider errors, truncated/blocked/non-text responses, no hidden retries and cleanup. They require no API key or network.
+Reliability tests cover exhausted/recovered retries, same-key replay after lost responses,
+bounded repair (including the real SDK with mocked HTTP), cancellation/deadlines during
+backoff, last-step recovery and preserved ambiguity after later preflight failure.
+`llm_requested.is_repair` and `retry_scheduled` events expose repair and retry decisions
+without logging raw responses; retry events identify the failed call and next attempt/delay.
 GitHub Actions is configured for Python 3.12 and 3.13 on pushes and pull requests.
 
 ## Project layout
@@ -234,7 +264,11 @@ The mock incident adapter's internal claimed-action bridge is for trusted code.
 The harness invokes it only after the stored pending action is claimed by an explicit
 approve call. In-process callers are trusted; this is not a sandbox for hostile Python code.
 
-Next: bounded retries/repair and richer failure classification (M5), execution
-API/Postman (M6), live end-to-end verification and submission documentation (M7/M8).
+Retry safety relies on the adapter honoring its declared idempotency contract. The mock
+ledger has no durability across restarts, and there is no reconciliation service for unknown
+outcomes. Backoff is a fixed bounded schedule without jitter; deployment-scale retry policy
+and provider transport retries are outside this version.
+
+Next: execution API/Postman (M6), live end-to-end verification and submission documentation (M7/M8).
 The M3 smoke verifies two real provider decisions with zero tool dispatches; it does
 not establish a full live investigation or approval flow. Those remain later gates.

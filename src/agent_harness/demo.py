@@ -18,6 +18,8 @@ from agent_harness.tools.factory import build_mock_tools
 
 
 def scenario_responses(scenario: str) -> tuple[str, ...]:
+    if scenario == "repair":
+        return ("deliberately malformed demo response",) + scenario_responses("investigation")
     status = json.dumps(
         {
             "type": "tool_call",
@@ -146,7 +148,14 @@ def main() -> None:
     parser.add_argument("--data-dir", type=Path, default=Path("mock_data"))
     parser.add_argument(
         "--scenario",
-        choices=("investigation", "step-limit", "incident-pending", "incident-blocked", "approval"),
+        choices=(
+            "investigation",
+            "repair",
+            "step-limit",
+            "incident-pending",
+            "incident-blocked",
+            "approval",
+        ),
         default="investigation",
     )
     args = parser.parse_args()

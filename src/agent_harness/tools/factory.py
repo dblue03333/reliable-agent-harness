@@ -53,6 +53,7 @@ def build_mock_tools(directory: Path, *, now: Callable[[], datetime] | None = No
                 handler=incidents,
                 side_effect=True,
                 requires_approval=True,
+                supports_incident_replay=True,
             ),
         )
     )

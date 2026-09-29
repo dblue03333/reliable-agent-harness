@@ -163,8 +163,8 @@ async def test_duplicate_run_cannot_advance_or_fail_the_winning_owner(bundle):
         (None, ErrorCode.INVALID_DECISION),
     ],
 )
-async def test_rejected_decision_never_dispatches_and_is_not_repaired(bundle, raw, code, caplog):
-    harness = make_harness(bundle, responses=(raw, FINAL))
+async def test_rejected_decision_with_repair_disabled_never_dispatches(bundle, raw, code, caplog):
+    harness = make_harness(bundle, responses=(raw, FINAL), max_llm_repair_attempts=0)
     with caplog.at_level("INFO", logger="agent_harness.events"):
         state = await harness.execute("Inspect")
     assert state.status == ExecutionStatus.FAILED
@@ -210,7 +210,11 @@ async def test_incident_is_blocked_at_harness_before_registry_dispatch(bundle):
 )
 async def test_tool_failure_records_one_attempt_without_retry(response, failure, code):
     handler = AsyncMock(return_value=response, side_effect=failure)
-    harness = AgentHarness(ScriptedLLMProvider((READ, FINAL)), read_registry(handler), Settings())
+    harness = AgentHarness(
+        ScriptedLLMProvider((READ, FINAL)),
+        read_registry(handler),
+        Settings(max_read_tool_retries=0),
+    )
     state = await harness.execute("Inspect")
     assert state.status == ExecutionStatus.FAILED
     assert state.error.code == code

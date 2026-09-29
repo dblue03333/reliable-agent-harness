@@ -214,7 +214,8 @@ async def test_only_public_text_is_returned_and_harness_validates_malformed_json
     assert state.status == ExecutionStatus.FAILED
     assert state.error.code == ErrorCode.INVALID_DECISION
     assert "private reasoning" not in state.model_dump_json()
-    assert state.step_count == len(requests) == 1
+    assert state.step_count == len(requests) == 2
+    assert state.repair_attempt_count == 1
     assert state.tool_history == ()
 
 
@@ -324,3 +325,26 @@ async def test_provider_rejects_missing_or_extra_envelope_fields(
         with pytest.raises(HarnessError) as exc:
             await provider.generate(LLMRequest(execution_id="exec_1", objective="Inspect", step=1))
     assert exc.value.info.code == ErrorCode.INVALID_DECISION
+
+
+@pytest.mark.parametrize("malformed", ["{}", "secret malformed provider output"])
+async def test_harness_repairs_real_sdk_response_with_safe_system_feedback(
+    settings, registry, wire, malformed
+):
+    responses = iter((malformed, FINAL))
+
+    async def handler(request):
+        return httpx.Response(200, json=response_body(next(responses)))
+
+    requests, options, _ = wire(handler)
+    async with GeminiLLMProvider(settings, registry.descriptions()) as provider:
+        state = await AgentHarness(provider, registry, settings).execute("Inspect")
+    assert state.status == ExecutionStatus.COMPLETED
+    assert state.step_count == len(requests) == 2
+    assert state.repair_attempt_count == 1
+    assert options[0]["http_options"].retry_options.attempts == 1
+    first, second = (json.loads(r.content) for r in requests)
+    assert first["contents"] == second["contents"]
+    instructions = second["systemInstruction"]["parts"][0]["text"]
+    assert "previous response did not match" in instructions
+    assert "secret malformed provider output" not in requests[1].content.decode()
