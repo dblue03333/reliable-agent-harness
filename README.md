@@ -5,7 +5,7 @@
 An operations assistant built around validated tools, bounded agent execution,
 and human approval before creating incidents.
 
-**Status: M5 — bounded retries and response repair implemented.**
+**Status: M6 — execution API and Postman walkthrough implemented.**
 The harness accepts objectives, validates LLM/tool decisions, tracks isolated state/history,
 and enforces step/runtime limits. Incident proposals now pause for explicit human approval
 of the exact stored action. Approve executes it with bounded, idempotent retries;
@@ -13,7 +13,7 @@ reject resumes with a denial observation.
 Duplicate or competing decisions cannot claim the same action twice.
 
 Gemini schema smoke passed on 2026-09-29 using `gemini-3.5-flash-lite` and SDK `1.75.0`.
-M5 is verified offline; full live investigation/approval E2E is still a later gate.
+M6 is verified offline; full live investigation/approval E2E is still a later gate.
 This is an incremental implementation, not a completed assessment submission.
 
 ## Quick start
@@ -141,7 +141,9 @@ See [.env.example](.env.example).
 | Variable | Default | Current use |
 | --- | --- | --- |
 | `LLM_PROVIDER` | `fake` | Offline CLI requires fake; no silent fallback from Gemini |
-| `GEMINI_API_KEY`, `GEMINI_MODEL` | empty | Required for the M3 Gemini adapter/smoke; no model default |
+| `GEMINI_API_KEY`, `GEMINI_MODEL` | empty | Required for Gemini API/smoke; no model default |
+| `FAKE_SCENARIO` | `approval` | API-only script: `approval` (reads → proposal → final) or `investigation` (reads → final) |
+| `MOCK_DATA_DIR` | `mock_data` | API dataset directory relative to working directory, or absolute path |
 | `MAX_AGENT_STEPS` | `10` | LLM request cap |
 | `MAX_ACTIVE_RUNTIME_SECONDS` | `60` | Total active run budget |
 | `LLM_TIMEOUT_SECONDS` | `20` | Per LLM operation timeout |
@@ -149,17 +151,64 @@ See [.env.example](.env.example).
 | `MAX_LLM_REPAIR_ATTEMPTS` | `1` | Execution-wide repair cap; 0 disables, hard cap 1 |
 | `MAX_READ_TOOL_RETRIES` | `2` | Retries after the first attempt; 0 disables, hard cap 2 |
 | `MAX_INCIDENT_RETRIES` | `1` | Retries for replay-safe incident adapters; 0 disables, hard cap 1 |
-| `LOG_LEVEL` | `INFO` | CLI event logging |
+| `LOG_LEVEL` | `INFO` | CLI/API event logging (host logging configuration may override) |
 
-The API still exposes **health only**; execution endpoints are planned for M6:
+Run the local API from the repository root using one worker:
 
 ```sh
-uv run uvicorn agent_harness.api:app --reload
+LLM_PROVIDER=fake FAKE_SCENARIO=approval uv run uvicorn agent_harness.api:app --host 127.0.0.1 --port 8000
 ```
 
-- API docs: http://127.0.0.1:8000/docs
-- Health endpoint: http://127.0.0.1:8000/health
-- Import `postman/agent-harness.postman_collection.json` to check health.
+`/docs` provides interactive OpenAPI documentation; `/health` confirms startup.
+Startup validates settings and loads the mock dataset. A single app lifespan owns one
+harness, store, ledger and provider; shutdown closes the owned Gemini client.
+Do not use multiple workers: each would have separate state. Restart or `--reload`
+loses executions and pending approvals. No authentication is implemented; use loopback locally.
+
+| Method / route | Behavior |
+| --- | --- |
+| `POST /executions` | Body `{"objective":"Investigate checkout timeouts"}`; 201 snapshot at the first stopping point |
+| `GET /executions/{execution_id}` | 200 detached snapshot, including `pending_action`, actions and tool history |
+| `GET /executions/{execution_id}/events` | 200 ordered event array |
+| `POST /executions/{execution_id}/actions/{action_id}/approve` | 200 after executing the saved action and resuming; **no request body** |
+| `POST /executions/{execution_id}/actions/{action_id}/reject` | 200 after recording denial and resuming; **no request body** |
+
+POST waits until completion, failure, limit or approval pause; there are no background jobs
+or 202 responses. Missing/foreign IDs return 404, stale/competing decisions 409, and invalid
+HTTP input 422. Approve/reject reject even `{}`, `null` or whitespace bodies. HTTP errors
+use `{"error":{"code":"...","message":"..."}}` with sanitized messages. Unhandled API
+errors return 500. Errors caught during harness execution return a **201/200 execution
+snapshot** with `failed`/`limit_exceeded`; always inspect status and action outcomes.
+A request-task cancellation triggers harness cleanup, but a client disconnect does not
+guarantee task cancellation. If a response is lost, inspect the known execution/action IDs
+before acting again. Creation requests do not have a client-supplied idempotency key.
+
+Snapshots contain objectives and validated observations. Operational events omit raw payloads;
+neither snapshots nor endpoints are designed for public unauthenticated hosting.
+The API fake provider is explicitly scripted and does not infer a plan from arbitrary objectives.
+The default script reads status and KB, then pauses for approval; investigation mode completes
+without a proposal. Select the script at startup, not through a per-request fault/scenario flag.
+
+Import both files into Postman:
+
+- [Collection](postman/agent-harness.postman_collection.json)
+- [Local environment](postman/local.postman_environment.json)
+
+Choose the local environment. Requests capture separate execution/action IDs for approval and
+rejection. For manual walkthrough, inspect the saved proposal before sending the approval request.
+**Collection Runner intentionally approves one synthetic incident and rejects another**;
+it is for the default fake approval script and limits, not a live-provider benchmark.
+It verifies 201/200 snapshots, zero incident attempts before approval, ordered events,
+receipt preservation, rejected replacement payloads, duplicate decisions and missing IDs.
+
+Run the same collection from a second terminal (optional Node.js/npm tooling):
+
+```sh
+npx --yes newman@6.2.1 run postman/agent-harness.postman_collection.json -e postman/local.postman_environment.json
+```
+
+To use another local port, append `--env-var base_url=http://127.0.0.1:8766`.
+The collection can be rerun: each run creates fresh executions and overwrites captured IDs.
 
 ## Gemini schema smoke (M3, opt-in)
 
@@ -194,7 +243,8 @@ local decision/tool validation was not relaxed.
 `GeminiLLMProvider` implements the same interface used by `AgentHarness`; the fake CLI
 remains explicitly offline. If `.env` selects Gemini, run the fake demo with
 `LLM_PROVIDER=fake uv run python -m agent_harness.demo --objective "Inspect checkout"`.
-The HTTP API still has no execution routes. Full live read/approval flows remain M7.
+The HTTP API selects the Gemini adapter at startup when configured. Full live read/approval
+verification remains M7; M6 tests lifecycle wiring with injected providers and mocked transport.
 
 The SDK receives metadata/schema and messages, never tool handlers. Tool observations
 stay in user content marked as untrusted data; they are not promoted to system instructions.
@@ -242,10 +292,10 @@ src/agent_harness/
   llm/smoke.py                       Explicit live schema check (no tool execution)
   tools/                             Registry, handlers and tool-only demo
   demo.py                            Scripted CLI and explicit approval prompt
-  api.py                             Health endpoint
+  api.py                             Lifespan, execution/approval routes and safe HTTP errors
 tests/                              Automated tests
 mock_data/                          Synthetic statuses/runbooks and data dictionary
-postman/                            Importable health API collection
+postman/                            Execution/approval collection and local environment
 .github/workflows/                  CI
 ```
 
@@ -269,6 +319,6 @@ ledger has no durability across restarts, and there is no reconciliation service
 outcomes. Backoff is a fixed bounded schedule without jitter; deployment-scale retry policy
 and provider transport retries are outside this version.
 
-Next: execution API/Postman (M6), live end-to-end verification and submission documentation (M7/M8).
+Next: live end-to-end verification and submission documentation (M7/M8).
 The M3 smoke verifies two real provider decisions with zero tool dispatches; it does
 not establish a full live investigation or approval flow. Those remain later gates.

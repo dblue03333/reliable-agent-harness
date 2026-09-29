@@ -1,11 +1,35 @@
 {
   "info": {
-    "name": "Reliable Agent Harness",
-    "description": "Bootstrap API. Execution and approval requests will be added when implemented.",
+    "name": "Reliable Agent Harness \u2014 offline approval walkthrough",
+    "description": "Run against LLM_PROVIDER=fake and FAKE_SCENARIO=approval, default limits. This collection intentionally approves one synthetic incident and rejects a separate proposal. Inspect the snapshot request before manually running approval. Collection Runner/Newman automates that mock approval; do not point it at live or production integrations. No API key required.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
-    {"key": "base_url", "value": "http://127.0.0.1:8000", "type": "string"}
+    {
+      "key": "base_url",
+      "value": "http://127.0.0.1:8000",
+      "type": "string"
+    },
+    {
+      "key": "approve_execution_id",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "approve_action_id",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "reject_execution_id",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "reject_action_id",
+      "value": "",
+      "type": "string"
+    }
   ],
   "item": [
     {
@@ -21,10 +45,390 @@
           "script": {
             "type": "text/javascript",
             "exec": [
-              "pm.test('API is healthy', function () {",
-              "  pm.response.to.have.status(200);",
-              "  pm.expect(pm.response.json().status).to.eql('ok');",
-              "});"
+              "pm.test('Health: HTTP 200', () => pm.response.to.have.status(200));",
+              "const harnessResponse = pm.response.json();",
+              "pm.test('healthy', () => { pm.expect(harnessResponse.status).to.eql('ok'); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Create execution for approve",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{base_url}}/executions",
+        "body": {
+          "mode": "raw",
+          "raw": "{\"objective\": \"Investigate checkout timeouts using the synthetic tools and propose an incident for review.\"}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Create execution for approve: HTTP 201', () => pm.response.to.have.status(201));",
+              "const harnessResponse = pm.response.json();",
+              "pm.test('pauses before incident', () => { pm.expect(harnessResponse.status).to.eql('waiting_approval'); pm.expect(harnessResponse.actions).to.have.lengthOf(1); pm.expect(harnessResponse.tool_history.filter(x => x.tool === 'create_incident')).to.have.lengthOf(0); });",
+              "pm.test('read observations preserved', () => { pm.expect(harnessResponse.tool_history).to.have.lengthOf(2); pm.expect(harnessResponse.pending_action.action_id).to.eql(harnessResponse.pending_action_id); });",
+              "pm.collectionVariables.set('approve_execution_id', harnessResponse.execution_id);",
+              "pm.collectionVariables.set('approve_action_id', harnessResponse.pending_action_id);"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Inspect approve snapshot",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{base_url}}/executions/{{approve_execution_id}}"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Inspect approve snapshot: HTTP 200', () => pm.response.to.have.status(200));",
+              "const harnessResponse = pm.response.json();",
+              "pm.test('pending snapshot', () => { pm.expect(harnessResponse.status).to.eql('waiting_approval'); pm.expect(harnessResponse.pending_action.arguments.title).to.be.a('string'); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Reject replacement approval payload",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{base_url}}/executions/{{approve_execution_id}}/actions/{{approve_action_id}}/approve",
+        "body": {
+          "mode": "raw",
+          "raw": "{\"severity\": \"critical\"}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Reject replacement approval payload: HTTP 422', () => pm.response.to.have.status(422));",
+              "const harnessResponse = pm.response.json();",
+              "pm.test('safe validation error', () => { pm.expect(harnessResponse.error.code).to.eql('invalid_request'); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Approve exact saved action",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "url": "{{base_url}}/executions/{{approve_execution_id}}/actions/{{approve_action_id}}/approve"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Approve exact saved action: HTTP 200', () => pm.response.to.have.status(200));",
+              "const harnessResponse = pm.response.json();",
+              "pm.test('completed segment', () => { pm.expect(harnessResponse.status).to.eql('completed'); pm.expect(harnessResponse.pending_action).to.eql(null); pm.expect(harnessResponse.step_count).to.eql(4); });",
+              "pm.test('recorded action outcome', () => { pm.expect(harnessResponse.actions[0].outcome).to.eql('succeeded'); pm.expect(harnessResponse.actions[0].result.incident_id).to.be.a('string'); pm.expect(harnessResponse.tool_history.filter(x => x.tool === 'create_incident')).to.have.lengthOf(1); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Read completed approve snapshot",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{base_url}}/executions/{{approve_execution_id}}"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Read completed approve snapshot: HTTP 200', () => pm.response.to.have.status(200));",
+              "const harnessResponse = pm.response.json();",
+              "pm.test('state persists across requests', () => { pm.expect(harnessResponse.status).to.eql('completed'); pm.expect(harnessResponse.actions).to.have.lengthOf(1); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Read approve event trace",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{base_url}}/executions/{{approve_execution_id}}/events"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Read approve event trace: HTTP 200', () => pm.response.to.have.status(200));",
+              "const harnessResponse = pm.response.json();",
+              "pm.test('ordered sequence', () => { pm.expect(harnessResponse.map(e => e.sequence)).to.eql(harnessResponse.map((_, i) => i + 1)); });",
+              "pm.test('one termination event', () => { pm.expect(harnessResponse.filter(e => e.event_type === 'execution_terminated')).to.have.lengthOf(1); pm.expect(harnessResponse[harnessResponse.length - 1].status).to.eql('completed'); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Duplicate approve conflicts",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "url": "{{base_url}}/executions/{{approve_execution_id}}/actions/{{approve_action_id}}/approve"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Duplicate approve conflicts: HTTP 409', () => pm.response.to.have.status(409));",
+              "const harnessResponse = pm.response.json();",
+              "pm.test('stale action', () => { pm.expect(harnessResponse.error.code).to.eql('action_conflict'); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Create execution for reject",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{base_url}}/executions",
+        "body": {
+          "mode": "raw",
+          "raw": "{\"objective\": \"Investigate checkout timeouts using the synthetic tools and propose an incident for review.\"}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Create execution for reject: HTTP 201', () => pm.response.to.have.status(201));",
+              "const harnessResponse = pm.response.json();",
+              "pm.test('pauses before incident', () => { pm.expect(harnessResponse.status).to.eql('waiting_approval'); pm.expect(harnessResponse.actions).to.have.lengthOf(1); pm.expect(harnessResponse.tool_history.filter(x => x.tool === 'create_incident')).to.have.lengthOf(0); });",
+              "pm.test('read observations preserved', () => { pm.expect(harnessResponse.tool_history).to.have.lengthOf(2); pm.expect(harnessResponse.pending_action.action_id).to.eql(harnessResponse.pending_action_id); });",
+              "pm.collectionVariables.set('reject_execution_id', harnessResponse.execution_id);",
+              "pm.collectionVariables.set('reject_action_id', harnessResponse.pending_action_id);"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Inspect reject snapshot",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{base_url}}/executions/{{reject_execution_id}}"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Inspect reject snapshot: HTTP 200', () => pm.response.to.have.status(200));",
+              "const harnessResponse = pm.response.json();",
+              "pm.test('pending snapshot', () => { pm.expect(harnessResponse.status).to.eql('waiting_approval'); pm.expect(harnessResponse.pending_action.arguments.title).to.be.a('string'); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Reject exact saved action",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "url": "{{base_url}}/executions/{{reject_execution_id}}/actions/{{reject_action_id}}/reject"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Reject exact saved action: HTTP 200', () => pm.response.to.have.status(200));",
+              "const harnessResponse = pm.response.json();",
+              "pm.test('completed segment', () => { pm.expect(harnessResponse.status).to.eql('completed'); pm.expect(harnessResponse.pending_action).to.eql(null); pm.expect(harnessResponse.step_count).to.eql(4); });",
+              "pm.test('recorded action outcome', () => { pm.expect(harnessResponse.actions[0].status).to.eql('rejected'); pm.expect(harnessResponse.actions[0].result).to.eql(null); pm.expect(harnessResponse.tool_history.filter(x => x.tool === 'create_incident')).to.have.lengthOf(0); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Read completed reject snapshot",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{base_url}}/executions/{{reject_execution_id}}"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Read completed reject snapshot: HTTP 200', () => pm.response.to.have.status(200));",
+              "const harnessResponse = pm.response.json();",
+              "pm.test('state persists across requests', () => { pm.expect(harnessResponse.status).to.eql('completed'); pm.expect(harnessResponse.actions).to.have.lengthOf(1); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Read reject event trace",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{base_url}}/executions/{{reject_execution_id}}/events"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Read reject event trace: HTTP 200', () => pm.response.to.have.status(200));",
+              "const harnessResponse = pm.response.json();",
+              "pm.test('ordered sequence', () => { pm.expect(harnessResponse.map(e => e.sequence)).to.eql(harnessResponse.map((_, i) => i + 1)); });",
+              "pm.test('one termination event', () => { pm.expect(harnessResponse.filter(e => e.event_type === 'execution_terminated')).to.have.lengthOf(1); pm.expect(harnessResponse[harnessResponse.length - 1].status).to.eql('completed'); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Duplicate reject conflicts",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "url": "{{base_url}}/executions/{{reject_execution_id}}/actions/{{reject_action_id}}/reject"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Duplicate reject conflicts: HTTP 409', () => pm.response.to.have.status(409));",
+              "const harnessResponse = pm.response.json();",
+              "pm.test('stale action', () => { pm.expect(harnessResponse.error.code).to.eql('action_conflict'); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Unknown execution",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{base_url}}/executions/missing"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Unknown execution: HTTP 404', () => pm.response.to.have.status(404));",
+              "const harnessResponse = pm.response.json();",
+              "pm.test('not found', () => { pm.expect(harnessResponse.error.code).to.eql('not_found'); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Malformed objective",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{base_url}}/executions",
+        "body": {
+          "mode": "raw",
+          "raw": "{\"objective\": \" \"}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Malformed objective: HTTP 422', () => pm.response.to.have.status(422));",
+              "const harnessResponse = pm.response.json();",
+              "pm.test('invalid request', () => { pm.expect(harnessResponse.error.code).to.eql('invalid_request'); });"
             ]
           }
         }

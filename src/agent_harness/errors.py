@@ -9,6 +9,7 @@ from agent_harness.contracts import ContractModel
 
 
 class ErrorCode(StrEnum):
+    INVALID_REQUEST = "invalid_request"
     INVALID_CONFIGURATION = "invalid_configuration"
     INVALID_DECISION = "invalid_decision"
     UNKNOWN_TOOL = "unknown_tool"
