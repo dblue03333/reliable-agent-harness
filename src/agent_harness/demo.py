@@ -67,7 +67,7 @@ async def run_demo(args: argparse.Namespace) -> int:
     if settings.llm_provider != "fake":
         raise HarnessError(
             ErrorCode.INVALID_CONFIGURATION,
-            "This offline CLI requires LLM_PROVIDER=fake; Gemini is not implemented yet.",
+            "This offline CLI requires LLM_PROVIDER=fake; use agent_harness.llm.smoke for Gemini.",
         )
     logging.basicConfig(level=settings.log_level, format="%(message)s")
     bundle = build_mock_tools(args.data_dir)
