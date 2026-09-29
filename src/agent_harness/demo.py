@@ -1,9 +1,10 @@
-"""Offline M2 CLI: scripted decisions through the real harness and mock registry."""
+"""Offline harness CLI: scripted decisions through the real harness and mock registry."""
 
 import argparse
 import asyncio
 import json
 import logging
+import sys
 from pathlib import Path
 
 from pydantic import ValidationError
@@ -26,8 +27,8 @@ def scenario_responses(scenario: str) -> tuple[str, ...]:
     )
     if scenario == "step-limit":
         return (status,)
-    if scenario == "incident-blocked":
-        return (
+    if scenario in ("incident-blocked", "incident-pending", "approval"):
+        proposal = (
             json.dumps(
                 {
                     "type": "tool_call",
@@ -40,6 +41,16 @@ def scenario_responses(scenario: str) -> tuple[str, ...]:
                 }
             ),
         )
+        if scenario == "approval":
+            return proposal + (
+                json.dumps(
+                    {
+                        "type": "final",
+                        "answer": "Scripted demo finished. See the stored action outcome.",
+                    }
+                ),
+            )
+        return proposal
     return (
         status,
         json.dumps(
@@ -79,6 +90,33 @@ async def run_demo(args: argparse.Namespace) -> int:
         settings,
     )
     state = await harness.execute(args.objective)
+    if args.scenario == "approval" and state.status == ExecutionStatus.WAITING_APPROVAL:
+        action = next(a for a in state.actions if a.action_id == state.pending_action_id)
+        # Human waiting happens outside any active segment. No flag pre-approves a
+        # payload that the caller has not yet seen. This CLI owns one execution.
+        print(
+            json.dumps(
+                {
+                    "execution_id": state.execution_id,
+                    "pending_action": action.model_dump(mode="json"),
+                },
+                indent=2,
+            ),
+            file=sys.stderr,
+        )
+        print(
+            "Review the exact action above. Type approve or reject (anything else leaves pending):",
+            file=sys.stderr,
+            flush=True,
+        )
+        try:
+            choice = input().strip().lower()
+        except EOFError:
+            choice = ""
+        if choice == "approve":
+            state = await harness.approve(state.execution_id, action.action_id)
+        elif choice == "reject":
+            state = await harness.reject(state.execution_id, action.action_id)
     print(
         json.dumps(
             {
@@ -95,6 +133,8 @@ async def run_demo(args: argparse.Namespace) -> int:
             indent=2,
         )
     )
+    if state.status == ExecutionStatus.WAITING_APPROVAL:
+        return 3
     return 0 if state.status == ExecutionStatus.COMPLETED else 1
 
 
@@ -106,7 +146,7 @@ def main() -> None:
     parser.add_argument("--data-dir", type=Path, default=Path("mock_data"))
     parser.add_argument(
         "--scenario",
-        choices=("investigation", "step-limit", "incident-blocked"),
+        choices=("investigation", "step-limit", "incident-pending", "incident-blocked", "approval"),
         default="investigation",
     )
     args = parser.parse_args()
