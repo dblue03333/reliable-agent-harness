@@ -5,13 +5,15 @@
 An operations assistant built around validated tools, bounded agent execution,
 and human approval before creating incidents.
 
-**Status: M2 merged; M3 implemented locally and live schema smoke verified.**
-The harness has isolated in-memory state/history, JSON events, bounded read execution,
-and an offline scripted CLI. The Gemini adapter now uses the official async SDK with
-contract-derived structured output and no automatic tool calling or SDK retries.
-Live smoke passed on 2026-09-29 with `gemini-3.5-flash-lite` and SDK `1.75.0`: both
-tool and final decisions validated. The full suite with live testing enabled passed 188 tests. Incident proposals remain blocked before dispatch
-until approval/resume is implemented in M4. This is not a completed assessment submission.
+**Status: M4 — approval/resume implemented.**
+The harness accepts objectives, validates LLM/tool decisions, tracks isolated state/history,
+and enforces step/runtime limits. Incident proposals now pause for explicit human approval
+of the exact stored action. Approve executes it once; reject resumes with a denial observation.
+Duplicate or competing decisions cannot claim the same action twice.
+
+Gemini schema smoke passed on 2026-09-29 using `gemini-3.5-flash-lite` and SDK `1.75.0`.
+M4 is verified offline; full live investigation/approval E2E is still a later gate.
+This is an incremental implementation, not a completed assessment submission.
 
 ## Quick start
 
@@ -29,14 +31,32 @@ The CLI stores the objective, but **its responses follow a fixed script**; it do
 not diagnose arbitrary objectives. JSON execution/history/events go to stdout;
 JSON event logs go to stderr. Logs omit objectives, arguments and response bodies.
 The stdout history contains the objective and observations; handle it accordingly.
-Exit codes: `0` completed, `1` failed/limited execution, `2` invalid CLI/config/dataset.
+Exit codes: `0` completed, `1` failed/limited execution, `2` invalid CLI/config/dataset,
+`3` waiting for approval.
 
-Run the two controlled stopping scenarios (exit `1` is expected):
+Run controlled stopping scenarios (step-limit exits `1`; incident-pending exits `3`):
 
 ```sh
 MAX_AGENT_STEPS=3 uv run python -m agent_harness.demo --scenario step-limit --objective "Investigate checkout" --data-dir mock_data
-uv run python -m agent_harness.demo --scenario incident-blocked --objective "Create an incident" --data-dir mock_data
+uv run python -m agent_harness.demo --scenario incident-pending --objective "Create an incident" --data-dir mock_data
 ```
+
+Run the interactive approval demo in one process:
+
+```sh
+uv run python -m agent_harness.demo --scenario approval --objective "Propose a checkout incident" --data-dir mock_data
+```
+
+The CLI displays the exact title, description, severity and action ID, then waits for
+`approve` or `reject`. Approve creates one mock incident; reject creates none. Any other
+input or EOF leaves the action pending. The scripted final answer directs you to the
+actual recorded outcome instead of assuming approval. `incident-blocked` remains an
+alias for `incident-pending` for earlier demo commands.
+
+State is in memory: when the CLI exits, its pending execution is lost. To approve/reject,
+use the interactive scenario in that same process, or keep one `AgentHarness` instance
+alive and call `approve(execution_id, action_id)` / `reject(execution_id, action_id)`.
+These are trusted application entry points, not authentication or HTTP endpoints.
 
 Dataset paths are relative to the current directory unless absolute. When running
 from another directory, pass the absolute path to `mock_data`; see the
@@ -53,7 +73,9 @@ objective -> CREATED -> claim RUNNING
      final -> COMPLETED
      read tool -> validate input -> execute within deadline -> validate output
                -> record result -> feed observation back to LLM -> repeat
-     incident -> FAILED / approval_required (M4 will add pause/approve/resume)
+     incident -> save exact action -> WAITING_APPROVAL
+        approve(action_id) -> claim action -> execute -> record result -> resume loop
+        reject(action_id)  -> record denial (no dispatch) -> resume loop
   error -> FAILED; exhausted budget -> LIMIT_EXCEEDED
 ```
 
@@ -63,14 +85,28 @@ objective -> CREATED -> claim RUNNING
   bounded by the smaller of its timeout and remaining runtime. Global expiry is
   `runtime_limit`; an earlier operation timeout is `llm_timeout` or `tool_timeout`.
 - Validated tool successes remain in history if later work fails or exhausts limits.
-- Malformed responses and tool failures stop immediately in M2. Automatic repair
+- Malformed responses and tool failures stop immediately in M4. Automatic repair
   and retries are reserved for M5, even though their settings already exist.
 - Cancellation records terminal state and any interrupted read attempt, then
   propagates `CancelledError` to the caller. Async adapters must cooperate with
   cancellation; asyncio cannot forcibly interrupt blocking code.
-- A synchronous claim prevents two tasks on the same event loop from advancing
-  one execution. Terminal executions cannot be rerun. Snapshots are deep copies;
-  the store is for trusted harness code, not a security boundary.
+- A per-execution lock protects initial claim and approval/rejection decisions. It
+  is released before tool/LLM I/O. Synchronous state updates and detached snapshots
+  are consistent on one event loop; this does not support multiple workers/threads.
+- Approve/reject accept only execution/action IDs, never replacement arguments.
+  Foreign/missing actions return `not_found`; stale/duplicate decisions return
+  `action_conflict`. A new proposal always needs a new approval, even after rejection.
+- Human waiting time is excluded from active runtime. Resume carries forward time
+  and step counters. An incident proposed on the last step may execute after approval
+  if runtime remains; a later summary can still end with `step_limit`.
+- Before dispatch, interruption resolves the action as failed / `not_dispatched`.
+  After dispatch, timeout/cancellation/invalid output or other unverified error is
+  conservatively `outcome_unknown`. No automatic retries occur in M4. An unknown
+  outcome does not prove that no incident was created; check the external system.
+- Successful incident receipts remain recorded even if subsequent LLM work fails,
+  is cancelled, or reaches a budget limit. Terminal executions cannot be resumed.
+- This single-user local harness trusts the human-facing caller of approve/reject;
+  authentication and authorization of remote users are not implemented.
 
 ## Configuration and API
 
@@ -85,9 +121,9 @@ See [.env.example](.env.example).
 | `MAX_ACTIVE_RUNTIME_SECONDS` | `60` | Total active run budget |
 | `LLM_TIMEOUT_SECONDS` | `20` | Per LLM operation timeout |
 | `DEFAULT_TOOL_TIMEOUT_SECONDS` | `5` | Per tool operation timeout |
-| `MAX_LLM_REPAIR_ATTEMPTS` | `1` | Reserved for M5; no repair in M2 |
-| `MAX_READ_TOOL_RETRIES` | `2` | Reserved for M5; no retry in M2 |
-| `MAX_INCIDENT_RETRIES` | `1` | Reserved for M5; incident dispatch blocked in M2 |
+| `MAX_LLM_REPAIR_ATTEMPTS` | `1` | Reserved for M5; no repair in M4 |
+| `MAX_READ_TOOL_RETRIES` | `2` | Reserved for M5; no retry in M4 |
+| `MAX_INCIDENT_RETRIES` | `1` | Reserved for M5; M4 makes one approved attempt |
 | `LOG_LEVEL` | `INFO` | CLI event logging |
 
 The API still exposes **health only**; execution endpoints are planned for M6:
@@ -156,7 +192,9 @@ and use a dummy key; the real SDK request/response code is exercised without a n
 Tests cover contracts/settings, all three mock tools, validation, incident
 idempotency, read investigations, execution isolation, duplicate-run rejection,
 safe event logs, malformed output, tool/provider failures, blocked incidents,
-step/runtime limits, deadlines and cancellation. Gemini tests also cover schema/role
+step/runtime limits, deadlines and cancellation. Approval tests verify exact snapshots,
+competing decisions, cancellation before/after dispatch, lost responses, repeated proposals,
+resume budgets and preserved incident receipts. Gemini tests also cover schema/role
 mapping, provider errors, truncated/blocked/non-text responses, no hidden retries and cleanup. They require no API key or network.
 GitHub Actions is configured for Python 3.12 and 3.13 on pushes and pull requests.
 
@@ -166,14 +204,14 @@ GitHub Actions is configured for Python 3.12 and 3.13 on pushes and pull request
 src/agent_harness/
   models.py, contracts.py, errors.py   Validated data and safe errors
   config.py                          Settings
-  harness.py                         Execution loop and policy
-  storage.py                         In-memory snapshots and ordered events
+  harness.py                         Execution loop, approval/resume and cleanup
+  storage.py                         In-memory snapshots, claim locks and events
   budget.py                          Active runtime and operation deadlines
   llm/base.py, llm/fake.py            Provider interface and offline script
   llm/gemini.py, llm/schema.py        Async adapter and schema projection
   llm/smoke.py                       Explicit live schema check (no tool execution)
   tools/                             Registry, handlers and tool-only demo
-  demo.py                            Objective-driven CLI entry point
+  demo.py                            Scripted CLI and explicit approval prompt
   api.py                             Health endpoint
 tests/                              Automated tests
 mock_data/                          Synthetic statuses/runbooks and data dictionary
@@ -190,10 +228,13 @@ State/events and incident deduplication live in one process; restart loses them.
 The store supports one event loop and has no multi-worker/thread guarantees,
 authentication, persistence, retention limits or restart recovery. Event logging
 is standard Python logging, not a durable audit log or OpenTelemetry exporter.
-The mock incident adapter's internal claimed-action bridge is for trusted code;
-it is not proof of human approval. The harness never invokes it in M2.
+Log export is best effort: sink exceptions do not interrupt state transitions or cleanup;
+events remain in memory and `store.log_export_failures` counts export failures.
+The mock incident adapter's internal claimed-action bridge is for trusted code.
+The harness invokes it only after the stored pending action is claimed by an explicit
+approve call. In-process callers are trusted; this is not a sandbox for hostile Python code.
 
-Next: approval/resume (M4), retries/repair and ambiguity handling (M5), execution
+Next: bounded retries/repair and richer failure classification (M5), execution
 API/Postman (M6), live end-to-end verification and submission documentation (M7/M8).
 The M3 smoke verifies two real provider decisions with zero tool dispatches; it does
 not establish a full live investigation or approval flow. Those remain later gates.

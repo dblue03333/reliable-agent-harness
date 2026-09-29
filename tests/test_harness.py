@@ -188,14 +188,15 @@ async def test_incident_is_blocked_at_harness_before_registry_dispatch(bundle):
         wraps=bundle.registry.execute_claimed_incident
     )
     state = await harness.execute("Create an incident without approval")
-    assert state.status == ExecutionStatus.FAILED
-    assert state.error.code == ErrorCode.APPROVAL_REQUIRED
-    assert state.actions == ()
+    assert state.status == ExecutionStatus.WAITING_APPROVAL
+    assert state.error is None
+    assert len(state.actions) == 1
+    assert state.pending_action_id == state.actions[0].action_id
     assert state.tool_history == ()
     assert bundle.incidents.incident_count == 0
     bundle.registry.execute.assert_not_awaited()
     bundle.registry.execute_claimed_incident.assert_not_awaited()
-    assert_terminal_trace(harness, state)
+    assert harness.store.events(state.execution_id)[-1].event_type == EventType.ACTION_PROPOSED
 
 
 @pytest.mark.parametrize(
@@ -477,8 +478,9 @@ async def test_injected_tool_content_cannot_authorize_incident(bundle):
     bundle.registry.execute = execute
     harness = make_harness(bundle, (READ, *scenario_responses("incident-blocked")))
     state = await harness.execute("Inspect")
-    assert state.error.code == ErrorCode.APPROVAL_REQUIRED
+    assert state.status == ExecutionStatus.WAITING_APPROVAL
+    assert state.error is None
     assert state.tool_history[0].outcome == ActionOutcome.SUCCEEDED
     assert bundle.incidents.incident_count == 0
-    assert state.actions == ()
-    assert_terminal_trace(harness, state)
+    assert len(state.actions) == 1
+    assert harness.store.events(state.execution_id)[-1].event_type == EventType.ACTION_PROPOSED
