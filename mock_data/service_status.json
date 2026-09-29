@@ -1,0 +1,9 @@
+{
+  "services": [
+    {"service_name": "checkout-api", "status": "degraded", "latency_ms": 4200},
+    {"service_name": "payment-api", "status": "healthy", "latency_ms": 160},
+    {"service_name": "auth-api", "status": "healthy", "latency_ms": 85},
+    {"service_name": "cache-service", "status": "degraded", "latency_ms": 720},
+    {"service_name": "notification-worker", "status": "down", "latency_ms": 0}
+  ]
+}

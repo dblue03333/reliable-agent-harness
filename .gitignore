@@ -6,6 +6,7 @@
 venv/
 *.pem
 *.key
+local_doc/
 
 # Python and tooling
 __pycache__/
