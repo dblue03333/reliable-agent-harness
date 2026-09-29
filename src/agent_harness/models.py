@@ -1,4 +1,4 @@
-"""Decision and state contracts. Locks, transitions, dispatch, and budgets come later."""
+"""Validated decisions, state snapshots, attempts, and execution events."""
 
 import json
 import math
@@ -79,7 +79,7 @@ def parse_decision(raw_json: str) -> AgentDecision:
             raw_json, parse_constant=_finite_json_float, parse_float=_finite_json_float
         )
         return _decision_adapter.validate_python(data)
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, RecursionError):
         # Do not put potentially sensitive LLM output into public exception messages.
         raise DecisionValidationError() from None
 
@@ -95,7 +95,9 @@ class CreateExecutionRequest(ContractModel):
 
 class Message(ContractModel):
     role: Literal["system", "user", "assistant", "tool"]
-    content: Annotated[str, Field(min_length=1, max_length=16000)]
+    # An 8,000-character final answer can grow to ~48,000 after JSON escaping.
+    # Keep transport history large enough for valid decision/tool payloads.
+    content: Annotated[str, Field(min_length=1, max_length=64000)]
 
 
 class IncidentAction(ContractModel):
@@ -259,3 +261,5 @@ class ExecutionEvent(ContractModel):
     duration_ms: Annotated[float, Field(ge=0)] | None = None
     outcome: ActionOutcome | None = None
     error: ErrorInfo | None = None
+    status: ExecutionStatus | None = None
+    termination_reason: TerminationReason | None = None
