@@ -1,5 +1,7 @@
 """Smoke test for application startup and request routing."""
 
+from pathlib import Path
+
 import httpx
 import pytest
 
@@ -9,7 +11,9 @@ from agent_harness.errors import ConfigurationError
 
 
 async def test_health_endpoint() -> None:
-    app = create_app(Settings(_env_file=None))
+    app = create_app(
+        Settings(_env_file=None, mock_data_dir=Path(__file__).resolve().parents[1] / "mock_data")
+    )
     async with app.router.lifespan_context(app):
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"

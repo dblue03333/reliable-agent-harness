@@ -29,3 +29,23 @@ jobs:
         run: uv run --no-sync ruff format --check .
       - name: Test
         run: uv run --no-sync pytest
+      - uses: actions/setup-node@v4
+        if: matrix.python-version == '3.12'
+        with:
+          node-version: '22'
+      - name: Postman against local API
+        if: matrix.python-version == '3.12'
+        env:
+          LLM_PROVIDER: fake
+          FAKE_SCENARIO: approval
+          MOCK_DATA_DIR: mock_data
+        run: |
+          uv run --no-sync uvicorn agent_harness.api:app --host 127.0.0.1 --port 8766 > /tmp/harness-api.log 2>&1 &
+          HARNESS_API_PID=$!
+          trap 'kill "$HARNESS_API_PID" 2>/dev/null || true' EXIT
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:8766/health > /dev/null; then break; fi
+            sleep 1
+          done
+          curl --fail --silent http://127.0.0.1:8766/health
+          npx --yes newman@6.2.1 run postman/agent-harness.postman_collection.json -e postman/local.postman_environment.json --env-var base_url=http://127.0.0.1:8766

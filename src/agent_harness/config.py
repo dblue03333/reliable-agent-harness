@@ -1,5 +1,6 @@
 """Startup settings. Environment text is parsed; tool/LLM contracts stay strict."""
 
+from pathlib import Path
 from typing import Annotated, Literal, Self
 
 from pydantic import Field, SecretStr, ValidationError, field_validator, model_validator
@@ -19,6 +20,8 @@ class Settings(BaseSettings):
     )
 
     llm_provider: Literal["fake", "gemini"] = "fake"
+    mock_data_dir: Path = Path("mock_data")
+    fake_scenario: Literal["investigation", "approval"] = "approval"
     gemini_api_key: SecretStr | None = Field(default=None, exclude=True, repr=False)
     gemini_model: str | None = None
     max_agent_steps: Annotated[int, Field(gt=0)] = 10
