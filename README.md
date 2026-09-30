@@ -7,7 +7,8 @@ and human approval before creating incidents.
 
 **Implemented:** CLI and HTTP API, validated tool I/O, exact-action approval,
 bounded retries/repair, and execution history. State and incident deduplication are
-process-local. Fake mode is scripted; full live Gemini E2E verification is pending.
+process-local. Fake mode is scripted. Live Gemini read, approval and rejection flows
+passed on 2026-09-30 with `gemini-3.5-flash-lite` and SDK `1.75.0`.
 
 ## Quick start
 
@@ -134,7 +135,7 @@ See [.env.example](.env.example).
 | Variable | Default | Current use |
 | --- | --- | --- |
 | `LLM_PROVIDER` | `fake` | Offline CLI requires fake; no silent fallback from Gemini |
-| `GEMINI_API_KEY`, `GEMINI_MODEL` | empty | Required for Gemini API/smoke; no model default |
+| `GEMINI_API_KEY`, `GEMINI_MODEL` | empty | Required for Gemini API/smoke/E2E; no model default |
 | `FAKE_SCENARIO` | `approval` | API-only script: `approval` (reads → proposal → final) or `investigation` (reads → final) |
 | `MOCK_DATA_DIR` | `mock_data` | API dataset directory relative to working directory, or absolute path |
 | `MAX_AGENT_STEPS` | `10` | LLM request cap |
@@ -220,7 +221,7 @@ Run from the repository root; these commands make real API calls and may incur u
 ```sh
 uv run python -m agent_harness.llm.smoke --data-dir mock_data
 # Alternative: the explicitly opted-in live test
-RUN_LIVE_TESTS=1 uv run pytest tests/live -m live -q
+RUN_LIVE_TESTS=1 uv run pytest tests/live/test_gemini.py -m live -q
 ```
 
 Use either command for a smoke run; running both repeats the API calls. The smoke
@@ -234,14 +235,64 @@ The adapter unwraps it; the harness validates the inner decision and tool argume
 `GeminiLLMProvider` implements the same interface used by `AgentHarness`; the fake CLI
 remains explicitly offline. If `.env` selects Gemini, run the fake demo with
 `LLM_PROVIDER=fake uv run python -m agent_harness.demo --objective "Inspect checkout"`.
-The HTTP API selects the Gemini adapter at startup when configured. Full live read/approval
-verification remains M7; M6 tests lifecycle wiring with injected providers and mocked transport.
+The HTTP API selects the Gemini adapter at startup when configured.
+The E2E runner below checks read/approval flows through this same app and harness.
 
 The SDK receives metadata/schema and messages, never tool handlers. Tool observations
 stay in user content marked as untrusted data; they are not promoted to system instructions.
 Structured output guides generation; the harness still validates decisions and tool inputs.
 See [Google's structured-output documentation](https://ai.google.dev/gemini-api/docs/generate-content/structured-output)
 and the [official SDK documentation](https://googleapis.github.io/python-genai/).
+
+## Live harness verification (M7, opt-in)
+
+Configure Gemini as above, then run each scenario from the repository root:
+
+```sh
+uv run python -m agent_harness.llm.e2e --scenario read --data-dir mock_data
+uv run python -m agent_harness.llm.e2e --scenario approve --data-dir mock_data
+uv run python -m agent_harness.llm.e2e --scenario reject --data-dir mock_data
+```
+
+The approval command displays the exact saved proposal and asks you to type `approve`.
+Declining or EOF fails verification with zero incident effects. Each command owns an
+isolated in-memory store and mock incident ledger, discarded on exit. The rejection
+scenario explicitly rejects its proposal. No production incident system is contacted.
+For unattended verification, `--scenario approve --approve-mock-incident` explicitly
+authorizes the single synthetic incident in that run; the flag is restricted to this
+mock-only runner and is not an API option.
+
+Alternatively, run all three scenarios as opted-in tests (automatically approves one
+synthetic incident; this repeats real API usage if you already ran the commands):
+
+```sh
+RUN_LIVE_TESTS=1 uv run pytest tests/live/test_live_e2e.py -m live -q
+```
+
+The runner uses the real Gemini adapter/network and real HTTP routes, execution loop,
+validation, tools and store. HTTP requests enter the app **in-process via ASGITransport**;
+this does not verify a deployed server, proxy, authentication or network disconnects.
+Offline tests exercise the same runner with scripted decisions and the real SDK over
+mocked HTTP; CI does not contact Gemini.
+
+A pass requires both reads to succeed, their validated observations to reach the model,
+completion within budgets, consistent saved state and ordered events. Incident scenarios
+also require zero effects before approval, the exact saved action, no new proposal and
+409 on a duplicate decision. Approval must produce one mock receipt whose incident ID
+appears in the final answer; rejection must produce no incident attempts or effects.
+These checks establish execution invariants, not factual correctness of every generated
+sentence or broad prompt-injection resistance. The final narrative still needs review.
+
+JSON stdout contains model/SDK, schema fingerprint, timestamp, steps, attempts, action
+outcomes and event types. It omits credentials, arguments, raw responses and conversation
+content. The interactive proposal is printed to stderr for review. Exit `0` means all
+checks passed; exit `1` means failed/incomplete verification. Receipt evidence remains
+in a failed report if the incident succeeded but the later summary failed. Missing
+configuration fails without falling back to fake. Store local reports under ignored
+`local_doc/`. On 2026-09-30, read completed in 3 LLM requests (zero incidents),
+approve in 4 (one mock incident), and reject in 4 (zero incident attempts/effects).
+All three passed with default budgets, zero retries and zero repairs. These are individual
+verification runs, not a statistical reliability benchmark.
 
 ## Development checks
 
@@ -251,7 +302,7 @@ uv run ruff format --check .
 uv run pytest
 ```
 
-Default tests skip the live test even if credentials exist. Opting in with missing
+Default tests skip live tests even if credentials exist. Opting in with missing
 configuration fails rather than silently skipping. Offline tests replace HTTP transport
 and use a dummy key; the real SDK request/response code is exercised without a network.
 
@@ -281,6 +332,7 @@ src/agent_harness/
   llm/base.py, llm/fake.py            Provider interface and offline script
   llm/gemini.py, llm/schema.py        Async adapter and schema projection
   llm/smoke.py                       Explicit live schema check (no tool execution)
+  llm/e2e.py                         Opt-in live API/harness verification and safe evidence
   tools/                             Registry, handlers and tool-only demo
   demo.py                            Scripted CLI and explicit approval prompt
   api.py                             Lifespan, execution/approval routes and safe HTTP errors
@@ -310,6 +362,7 @@ ledger has no durability across restarts, and there is no reconciliation service
 outcomes. Backoff is a fixed bounded schedule without jitter; deployment-scale retry policy
 and provider transport retries are outside this version.
 
-Pending: full live investigation/approval verification and the submission report.
+Pending: submission report and final delivery packaging (M8).
+Live read/approval/rejection verification passed on 2026-09-30 as detailed above.
 The Gemini schema smoke passed on 2026-09-29 with `gemini-3.5-flash-lite` and SDK
 `1.75.0`; it verified two provider decisions with zero tool dispatches.
