@@ -10,6 +10,33 @@ bounded retries/repair, and execution history. State and incident deduplication 
 process-local. Fake mode is scripted. Live Gemini read, approval and rejection flows
 passed on 2026-09-30 with `gemini-3.5-flash-lite` and SDK `1.75.0`.
 
+[Quick start](#quick-start) · [Architecture](#design-choices-and-storage) ·
+[API & Postman](#configuration-and-api) · [Live verification](#live-harness-verification-opt-in) ·
+[Tests](#development-checks) · [Limitations](#current-limitations-and-next-steps)
+
+## Assessment review guide
+
+Scope: Q4 operations-assistant harness. All three tools use synthetic local data;
+Q5 aircraft-removal modeling is outside this repository's current submission.
+
+| Requirement | Implementation / evidence |
+| --- | --- |
+| Objective through API or CLI | [HTTP routes](src/agent_harness/api.py), [CLI](src/agent_harness/demo.py), [Postman collection](postman/agent-harness.postman_collection.json) |
+| LLM-tool loop and state | [Harness](src/agent_harness/harness.py), [models](src/agent_harness/models.py), [store](src/agent_harness/storage.py) |
+| Three mock tools and strict I/O | [Registry](src/agent_harness/tools/registry.py), [schemas](src/agent_harness/tools/schemas.py), [dataset and dictionary](mock_data/README.md) |
+| Errors, deadlines, retries and repair | [Budget](src/agent_harness/budget.py), [reliability tests](tests/test_reliability.py) |
+| Approval and execution limits | [Approval tests](tests/test_approval.py), [loop tests](tests/test_harness.py) |
+| Traces and HTTP behavior | [Store tests](tests/test_storage.py), [API tests](tests/test_api.py) |
+| Real-provider integration | [Gemini adapter](src/agent_harness/llm/gemini.py), [SDK transport tests](tests/test_gemini_provider.py), [opt-in E2E](src/agent_harness/llm/e2e.py) |
+
+**Verified on 30 September 2026:** 368 offline tests passed; four live tests are opt-in.
+The Postman walkthrough passed 18 requests and 43 assertions. These checks cover the
+local proof of concept; they do not establish production readiness.
+
+Run the offline quick start, then the Postman collection for an approval walkthrough.
+The configuration table below lists every runtime setting. Development checks explain
+which tests run offline and how to opt into paid provider calls.
+
 ## Quick start
 
 Prerequisites: Python 3.12+ and [uv](https://docs.astral.sh/uv/getting-started/installation/).
@@ -28,6 +55,9 @@ JSON event logs go to stderr. Logs omit objectives, arguments and response bodie
 The stdout history contains the objective and observations; handle it accordingly.
 Exit codes: `0` completed, `1` failed/limited execution, `2` invalid CLI/config/dataset,
 `3` waiting for approval.
+
+<details>
+<summary>CLI scenarios, approval and response repair</summary>
 
 Run controlled stopping scenarios (step-limit exits `1`; incident-pending exits `3`):
 
@@ -70,6 +100,59 @@ from another directory, pass the absolute path to `mock_data`; see the
 import `agent_harness`, prefix commands with `PYTHONPATH=src` from the repository root.
 The earlier tool-only demo remains available via `python -m agent_harness.tools.demo`.
 
+</details>
+
+## Design choices and storage
+
+```mermaid
+flowchart LR
+    C[CLI / HTTP client] --> H[Agent harness]
+    H <--> L[Gemini / scripted fake]
+    H <--> S[In-memory state and events]
+    H --> R[Validated read tools]
+    H --> P[Save incident proposal]
+    P --> A{Human decision}
+    A -->|Approve exact action| I[Validated incident dispatch]
+    A -->|Reject| O[Record denial]
+    R --> H
+    I --> H
+    O --> H
+```
+
+The model proposes decisions. The harness owns validation, budgets and dispatch;
+an incident proposal pauses execution until the client approves or rejects it.
+
+Python 3.12+ provides async execution; FastAPI provides HTTP validation and OpenAPI;
+Pydantic v2 defines strict contracts; the Google GenAI SDK provides structured decisions;
+pytest/pytest-asyncio, Ruff and a uv lockfile support reproducible verification.
+A small explicit execution loop keeps approval, retries and budgets visible in code.
+The provider returns decisions and has no tool handlers or direct store access.
+
+There is **no database in this proof of concept**. `InMemoryStore` holds execution
+snapshots, ordered event lists and one asyncio lock per execution. A separate mock
+incident ledger deduplicates approved actions. Store readers receive deep copies;
+claim/decision updates are protected by a short lock, released before external I/O.
+This supports concurrent requests on one event loop, with one owner per execution.
+
+| Implemented entity | Identity and retained information |
+| --- | --- |
+| Execution | execution_id; objective, status, budgets, messages, actions, attempts, final answer/error and timestamps |
+| Incident action | action_id + owning execution_id; exact validated arguments, decision/resolution times, status, outcome and receipt |
+| Tool attempt | call_id; step, attempt number, optional action_id, validated result/error and duration |
+| Event | execution_id + sequence; transition, step, call/action correlation, outcome and timing |
+| Mock incident ledger | action_id; owning execution/payload and generated receipt, retained only within that tool bundle |
+
+For durable deployment, a **proposed, unimplemented** PostgreSQL design would separate
+`executions`, `messages`, `actions`, `tool_attempts`, `events` and `incident_dispatches`.
+Use execution foreign keys, unique action/call IDs, unique `(execution_id, sequence)`
+for events and `(execution_id, message_index)` for messages. The dispatch record would
+use action_id as its idempotency key and retain the approved payload hash and receipt.
+A transaction would claim a pending action and record dispatch intent; network I/O
+would happen after commit. Compare-and-set updates or row locks plus owner leases
+would replace process-local locks. Restart recovery must reconcile stale dispatches
+with an idempotent external adapter before retrying. A database transaction alone
+cannot guarantee exactly-once effects in another system.
+
 ## Runtime behavior
 
 ```text
@@ -84,6 +167,9 @@ objective -> CREATED -> claim RUNNING
         reject(action_id)  -> record denial (no dispatch) -> resume loop
   error -> FAILED; exhausted budget -> LIMIT_EXCEEDED
 ```
+
+<details>
+<summary>Execution, retry and cancellation rules</summary>
 
 - Every LLM request consumes a step; tool attempts do not. A read on the last
   available step may finish, but there is no free LLM call to summarize it.
@@ -126,6 +212,8 @@ objective -> CREATED -> claim RUNNING
   is cancelled, or reaches a budget limit. Terminal executions cannot be resumed.
 - This single-user local harness trusts the human-facing caller of approve/reject;
   authentication and authorization of remote users are not implemented.
+
+</details>
 
 ## Configuration and API
 
@@ -204,7 +292,7 @@ npx --yes newman@6.2.1 run postman/agent-harness.postman_collection.json -e post
 To use another local port, append `--env-var base_url=http://127.0.0.1:8766`.
 The collection can be rerun: each run creates fresh executions and overwrites captured IDs.
 
-## Gemini schema smoke (M3, opt-in)
+## Gemini schema smoke (opt-in)
 
 Create a local `.env` (git-ignored) or set the equivalent environment variables:
 
@@ -244,7 +332,7 @@ Structured output guides generation; the harness still validates decisions and t
 See [Google's structured-output documentation](https://ai.google.dev/gemini-api/docs/generate-content/structured-output)
 and the [official SDK documentation](https://googleapis.github.io/python-genai/).
 
-## Live harness verification (M7, opt-in)
+## Live harness verification (opt-in)
 
 Configure Gemini as above, then run each scenario from the repository root:
 
@@ -362,7 +450,8 @@ ledger has no durability across restarts, and there is no reconciliation service
 outcomes. Backoff is a fixed bounded schedule without jitter; deployment-scale retry policy
 and provider transport retries are outside this version.
 
-Pending: submission report and final delivery packaging (M8).
+The technical report is prepared separately for the assessment submission.
+Internal drafts under `local_doc/` are excluded from this repository.
 Live read/approval/rejection verification passed on 2026-09-30 as detailed above.
 The Gemini schema smoke passed on 2026-09-29 with `gemini-3.5-flash-lite` and SDK
 `1.75.0`; it verified two provider decisions with zero tool dispatches.
